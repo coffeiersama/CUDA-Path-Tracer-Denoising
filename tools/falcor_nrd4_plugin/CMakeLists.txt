@@ -1,0 +1,5 @@
+add_plugin(NRD4Pass)
+target_sources(NRD4Pass PRIVATE NRD4Pass.cpp NRD4Prepare.cs.slang)
+target_include_directories(NRD4Pass PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../../../NRD4/Include")
+target_link_libraries(NRD4Pass PRIVATE d3d12)
+target_copy_shaders(NRD4Pass RenderPasses/NRD4Pass)

@@ -20,6 +20,7 @@
 #include "utilities.h"
 #include "scene.h"
 #include "denoise.h"
+#include "denoise_optimized.h"
 
 using namespace std;
 
@@ -32,6 +33,16 @@ extern int frame;
 
 extern int width;
 extern int height;
+extern int renderFrameLimit;
+extern float renderDeltaSeconds;
+extern bool hiddenPreview;
+extern std::string comparisonOutput;
+extern std::string capturePrefix;
+extern std::string recordSequence;
+extern bool referenceRender;
+extern int sampleSeedOffset;
+extern bool disableVsync;
+extern float fixedDeltaSeconds;
 
 extern float zoom, theta, phi;
 extern bool camchanged;
@@ -66,6 +77,7 @@ extern bool ui_usekdtree;
 extern float ui_camera_speed_theta;
 extern float ui_camera_speed_phi;
 extern bool ui_sepcolor;
+extern bool ui_pulse_light;
 extern bool ui_addcolor;
 
 void runCuda();

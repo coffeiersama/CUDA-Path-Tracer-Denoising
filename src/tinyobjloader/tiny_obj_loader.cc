@@ -462,7 +462,7 @@ namespace tinyobj {
 				char namebuf[4096];
 				token += 7;
 #ifdef _MSC_VER
-				sscanf_s(token, "%s", namebuf);
+				sscanf_s(token, "%4095s", namebuf, (unsigned)sizeof(namebuf));
 #else
 				sscanf(token, "%s", namebuf);
 #endif
@@ -754,7 +754,7 @@ namespace tinyobj {
 				char namebuf[4096];
 				token += 7;
 #ifdef _MSC_VER
-				sscanf_s(token, "%s", namebuf);
+				sscanf_s(token, "%4095s", namebuf, (unsigned)sizeof(namebuf));
 #else
 				sscanf(token, "%s", namebuf);
 #endif
@@ -782,7 +782,7 @@ namespace tinyobj {
 				char namebuf[4096];
 				token += 7;
 #ifdef _MSC_VER
-				sscanf_s(token, "%s", namebuf);
+				sscanf_s(token, "%4095s", namebuf, (unsigned)sizeof(namebuf));
 #else
 				sscanf(token, "%s", namebuf);
 #endif
@@ -800,9 +800,10 @@ namespace tinyobj {
 			if (token[0] == 'g' && isSpace((token[1]))) {
 
 				// flush previous face group.
-				bool ret = exportFaceGroupToShape(shape, vertexCache, v, vn, vt,
+				exportFaceGroupToShape(shape, vertexCache, v, vn, vt,
 					faceGroup, material, name, true);
-				if (ret) {
+				// usemtl may already have flushed faces into this shape.
+				if (!shape.mesh.indices.empty()) {
 					shapes.push_back(shape);
 				}
 
@@ -835,9 +836,9 @@ namespace tinyobj {
 			if (token[0] == 'o' && isSpace((token[1]))) {
 
 				// flush previous face group.
-				bool ret = exportFaceGroupToShape(shape, vertexCache, v, vn, vt,
+				exportFaceGroupToShape(shape, vertexCache, v, vn, vt,
 					faceGroup, material, name, true);
-				if (ret) {
+				if (!shape.mesh.indices.empty()) {
 					shapes.push_back(shape);
 				}
 
@@ -849,7 +850,7 @@ namespace tinyobj {
 				char namebuf[4096];
 				token += 2;
 #ifdef _MSC_VER
-				sscanf_s(token, "%s", namebuf);
+				sscanf_s(token, "%4095s", namebuf, (unsigned)sizeof(namebuf));
 #else
 				sscanf(token, "%s", namebuf);
 #endif
@@ -861,9 +862,9 @@ namespace tinyobj {
 			// Ignore unknown command.
 		}
 
-		bool ret = exportFaceGroupToShape(shape, vertexCache, v, vn, vt, faceGroup,
+		exportFaceGroupToShape(shape, vertexCache, v, vn, vt, faceGroup,
 			material, name, true);
-		if (ret) {
+		if (!shape.mesh.indices.empty()) {
 			shapes.push_back(shape);
 		}
 		faceGroup.clear(); // for safety

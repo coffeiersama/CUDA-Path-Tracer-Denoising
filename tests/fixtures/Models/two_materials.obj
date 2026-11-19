@@ -1,0 +1,16 @@
+mtllib two_materials.mtl
+v 0 0 0
+v 1 0 0
+v 0 1 0
+v 2 0 0
+v 3 0 0
+v 2 1 0
+vn 0 0 1
+vn 0 1 0
+vn 1 0 0
+usemtl red
+f 1//1 2//2 3//3
+usemtl green
+g second
+f 4//1 5//1 6//1
+usemtl red

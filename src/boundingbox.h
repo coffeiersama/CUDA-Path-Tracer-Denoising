@@ -3,7 +3,7 @@
 #include "glm/glm.hpp"
 #include <vector>
 
-extern struct Ray {
+struct Ray {
     glm::vec3 origin;
     glm::vec3 direction;
 };
@@ -33,7 +33,7 @@ public:
 		return (i == 0) ? minCorner : maxCorner;
 	}
 
-	BoundingBox& operator || (BoundingBox& b2) {
+	BoundingBox operator || (const BoundingBox& b2) const {
 		if (this->minCorner.x == 0.f && this->maxCorner.x == 0.f &&
 			this->minCorner.y == 0.f && this->maxCorner.y == 0.f &&
 			this->minCorner.z == 0.f && this->maxCorner.z == 0.f) {
@@ -49,7 +49,7 @@ public:
 		}
 	}
 
-	BoundingBox& operator || (const glm::vec3& p) {
+	BoundingBox operator || (const glm::vec3& p) const {
 		return BoundingBox(glm::vec3(glm::min(this->minCorner.x, p.x),
 									 glm::min(this->minCorner.y, p.y),
 									 glm::min(this->minCorner.z, p.z)),
@@ -59,6 +59,22 @@ public:
 	}
 
 	//https://gamedev.stackexchange.com/questions/18436/most-efficient-aabb-vs-ray-collision-algorithms
+	__host__ __device__ bool intersectBefore(const Ray &ray, const glm::vec3 &invDir, float limit) const {
+		float nearDistance = 0.0f, farDistance = limit;
+		for (int axis = 0; axis < 3; ++axis) {
+			if (ray.direction[axis] == 0.0f) {
+				if (ray.origin[axis] < minCorner[axis] || ray.origin[axis] > maxCorner[axis]) return false;
+			} else {
+				float a = (minCorner[axis] - ray.origin[axis]) * invDir[axis];
+				float b = (maxCorner[axis] - ray.origin[axis]) * invDir[axis];
+				nearDistance = fmaxf(nearDistance, fminf(a, b));
+				farDistance = fminf(farDistance, fmaxf(a, b));
+				if (nearDistance > farDistance) return false;
+			}
+		}
+		return nearDistance < limit;
+	}
+
 	__host__ __device__ bool AABBIntersect2(const Ray &ray, const glm::vec3 &invDir) const {
 		float txMin = (minCorner.x - ray.origin.x) * invDir.x; // 0-1 
 		float txMax = (maxCorner.x - ray.origin.x) * invDir.x;

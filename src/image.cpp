@@ -3,6 +3,10 @@
 #include <stb_image_write.h>
 
 #include "image.h"
+#include "display_transform.h"
+
+bool displayToneMap = true;
+float displayExposureEV = 0;
 
 image::image(int x, int y) :
         xSize(x),
@@ -11,7 +15,7 @@ image::image(int x, int y) :
 }
 
 image::~image() {
-    delete pixels;
+    delete[] pixels;
 }
 
 void image::setPixel(int x, int y, const glm::vec3 &pixel) {
@@ -24,7 +28,7 @@ void image::savePNG(const std::string &baseFilename) {
     for (int y = 0; y < ySize; y++) {
         for (int x = 0; x < xSize; x++) { 
             int i = y * xSize + x;
-            glm::vec3 pix = glm::clamp(pixels[i], glm::vec3(), glm::vec3(1)) * 255.f;
+            glm::vec3 pix = displayColor(pixels[i], displayToneMap, displayExposureEV) * 255.f;
             bytes[3 * i + 0] = (unsigned char) pix.x;
             bytes[3 * i + 1] = (unsigned char) pix.y;
             bytes[3 * i + 2] = (unsigned char) pix.z;

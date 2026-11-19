@@ -73,6 +73,18 @@ void denoiseFree() {
     cudaFree(dev_variance);
 }
 
+void denoiseReset() {
+    const int count = hst_scene->state.camera.resolution.x * hst_scene->state.camera.resolution.y;
+    cudaMemset(dev_history_length, 0, count * sizeof(int));
+    cudaMemset(dev_history_length_update, 0, count * sizeof(int));
+    cudaMemset(dev_moment_history, 0, count * sizeof(glm::vec2));
+    cudaMemset(dev_moment_acc, 0, count * sizeof(glm::vec2));
+    cudaMemset(dev_color_history, 0, count * sizeof(glm::vec3));
+    cudaMemset(dev_color_acc, 0, count * sizeof(glm::vec3));
+    cudaMemset(dev_gbuffer_prev, 0, count * sizeof(GBufferTexel));
+    cudaMemset(dev_variance, 0, count * sizeof(float));
+}
+
 // A-Trous Filter
 __global__ void ATrousFilter(glm::vec3 * colorin, glm::vec3 * colorout, float * variance,
                              GBufferTexel * gBuffer, glm::ivec2 res, int level, bool is_last,
@@ -398,5 +410,7 @@ void denoise(glm::vec3 * output, glm::vec3 * input, GBufferTexel * gbuffer) {
     cudaMemcpy(dev_history_length, dev_history_length_update, sizeof(int) * pixelcount, cudaMemcpyDeviceToDevice);
     view_matrix_prev = GetViewMatrix(cam);
 
+#ifndef NDEBUG
     cudaDeviceSynchronize();
+#endif
 }

@@ -1,12 +1,16 @@
 #include <iostream>
 #include "scene.h"
 #include <cstring>
+#include <filesystem>
+#include <stdexcept>
+#include <chrono>
 #include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtx/string_cast.hpp>
 
 #define TINYOBJLOADER_IMPLEMENTATION 
 
 Scene::Scene(string filename) {
+    const auto loadStart = std::chrono::steady_clock::now();
     cout << "Reading scene from " << filename << " ..." << endl;
     cout << " " << endl;
     char* fname = (char*)filename.c_str();
@@ -17,7 +21,7 @@ Scene::Scene(string filename) {
 
     if (!fp_in.is_open()) {
         cout << "Error reading from file - aborting!" << endl;
-        throw;
+        throw std::runtime_error("Cannot open scene file: " + filename);
     }
     while (fp_in.good()) {
         string line;
@@ -42,7 +46,11 @@ Scene::Scene(string filename) {
     bvh_nodes = BuildBVHTree(Node_count, triangles);
     cout << "BVH has " << Node_count << " nodes" << endl << endl;
 #endif 
-    loadLight();                // SET THE LIGHTS ARRAY
+    loadLight();
+    cout << "Scene ready: " << triangles.size() << " triangles, " << materials.size()
+         << " materials, " << textures.size() << " textures, "
+         << std::chrono::duration<double>(std::chrono::steady_clock::now() - loadStart).count()
+         << " seconds" << endl;
 }
 
 int Scene::loadGeom(string objectid) {
@@ -120,7 +128,7 @@ int Scene::loadCamera() {
     cout << "Loading Camera ..." << endl;
     RenderState &state = this->state;
     Camera &camera = state.camera;
-    float fovy;
+    float fovy = 45.0f;
 
     //load static properties
     for (int i = 0; i < 3; i++) {
@@ -150,6 +158,10 @@ int Scene::loadCamera() {
         } else if (strcmp(tokens[0].c_str(), "UP") == 0) {
             camera_up_default_ = glm::vec3(atof(tokens[1].c_str()), atof(tokens[2].c_str()), atof(tokens[3].c_str()));
             camera.up = camera_up_default_;
+        } else if (tokens[0] == "LIGHTRADIUS") {
+            state.lightRadius = std::stof(tokens[1]);
+        } else if (tokens[0] == "SKY") {
+            state.skyRadiance = glm::vec3(std::stof(tokens[1]), std::stof(tokens[2]), std::stof(tokens[3]));
         }
 
         utilityCore::safeGetline(fp_in, line);
@@ -161,7 +173,8 @@ int Scene::loadCamera() {
     float fovx = (atan(xscaled) * 180) / PI;
     camera.fov = glm::vec2(fovx, fovy);
 
-      camera.right = glm::normalize(glm::cross(camera.view, camera.up));
+    camera.view = glm::normalize(camera.lookAt - camera.position);
+    camera.right = glm::normalize(glm::cross(camera.view, camera.up));
       camera.pixelLength = glm::vec2(2 * xscaled / (float)camera.resolution.x
                               , 2 * yscaled / (float)camera.resolution.y);
 
@@ -217,9 +230,13 @@ int Scene::loadMaterial(string materialid) {
         while (!line.empty() && fp_in.good()) {
             vector<string> tokens = utilityCore::tokenizeString(line);
             if (strcmp(tokens[0].c_str(), "TEXTURE") == 0) {
-                string texturePath = "../scenes/Textures/" + tokens[1];
+                string texturePath = (std::filesystem::path(file_name).parent_path() / "Textures" / tokens[1]).string();
+                if (!std::filesystem::exists(texturePath)) {
+                    texturePath = (std::filesystem::path(file_name).parent_path() / tokens[1]).string();
+                }
                 Texture newT;
                 newT.Load(texturePath.c_str());
+                if (!newT.image) throw std::runtime_error("Cannot load texture: " + texturePath);
                 newMaterial.texid = textures.size();
                 textures.push_back(newT);
             }
@@ -231,25 +248,56 @@ int Scene::loadMaterial(string materialid) {
     }
 }
 
-static int tri_index = 0;
 void Scene::loadMesh(string objPath, Geom& newGeom, const glm::mat4& transform, const glm::mat4& invTranspose) {
-    objPath = "../scenes/Models/" + objPath;
+    objPath = (std::filesystem::path(file_name).parent_path() / "Models" / objPath).string();
     std::vector<tinyobj::shape_t> shapes;
-    std::vector<tinyobj::material_t> materials;
+    std::vector<tinyobj::material_t> objMaterials;
 
     cout << "obj file: " << objPath << endl;
-    std::string errors = tinyobj::LoadObj(shapes, materials, objPath.c_str());
+    const string materialDirectory = std::filesystem::path(objPath).parent_path().string() + "/";
+    std::string errors = tinyobj::LoadObj(shapes, objMaterials, objPath.c_str(), materialDirectory.c_str());
     std::cout << errors << std::endl;
 
     if (errors.size() != 0) {
-        cout << "error in loading obj file!!!" << endl;
-        return;
+        throw std::runtime_error("OBJ import failed: " + objPath + ": " + errors);
+    }
+
+    // material -1 opts into OBJ/MTL materials; explicit scene IDs still override.
+    const bool importMaterials = newGeom.materialid == -1;
+    const int materialBase = (int)this->materials.size();
+    std::map<string, int> textureCache;
+    if (importMaterials) {
+        for (const auto &m : objMaterials) {
+            Material material;
+            material.color = glm::vec3(m.diffuse[0], m.diffuse[1], m.diffuse[2]);
+            material.specular.color = glm::vec3(m.specular[0], m.specular[1], m.specular[2]);
+            material.specular.exponent = m.shininess;
+            material.emittance = glm::max(m.emission[0], glm::max(m.emission[1], m.emission[2]));
+            if (material.emittance > 0) material.color = glm::vec3(m.emission[0], m.emission[1], m.emission[2]) / material.emittance;
+            material.matid = (int)this->materials.size();
+            if (!m.diffuse_texname.empty()) {
+                string textureName = m.diffuse_texname;
+                std::replace(textureName.begin(), textureName.end(), '\\', '/');
+                string texturePath = (std::filesystem::path(materialDirectory) / textureName).lexically_normal().string();
+                auto found = textureCache.find(texturePath);
+                if (found == textureCache.end()) {
+                    Texture texture;
+                    texture.Load(texturePath.c_str());
+                    if (!texture.image) throw std::runtime_error("Cannot load OBJ texture: " + texturePath);
+                    material.texid = (int)textures.size();
+                    textureCache[texturePath] = material.texid;
+                    textures.push_back(texture);
+                } else material.texid = found->second;
+            }
+            this->materials.push_back(material);
+        }
+        if (objMaterials.empty()) throw std::runtime_error("No MTL materials loaded: " + objPath);
     }
 
     newGeom.BoundIdx = BoudningBoxs.size();
     newGeom.T_startidx = triangles.size();
 
-    float maxx_total = FLT_MIN, maxy_total = FLT_MIN, maxz_total = FLT_MIN;
+    float maxx_total = -FLT_MAX, maxy_total = -FLT_MAX, maxz_total = -FLT_MAX;
     float minx_total = FLT_MAX, miny_total = FLT_MAX, minz_total = FLT_MAX;
 
     for (int i = 0; i < shapes.size(); i++) {
@@ -268,6 +316,9 @@ void Scene::loadMesh(string objPath, Geom& newGeom, const glm::mat4& transform, 
             glm::vec3 worldp3 = glm::vec3(transform * glm::vec4(p3, 1));
 
             Triangle newt;
+            newt.geomId = (int)geoms.size();
+            int localMaterial = j / 3 < shapes[i].mesh.material_ids.size() ? shapes[i].mesh.material_ids[j / 3] : -1;
+            newt.materialId = importMaterials ? materialBase + (localMaterial >= 0 ? localMaterial : 0) : newGeom.materialid;
             newt.verts[0].pos = worldp1;
             newt.verts[1].pos = worldp2;
             newt.verts[2].pos = worldp3;
@@ -282,7 +333,7 @@ void Scene::loadMesh(string objPath, Geom& newGeom, const glm::mat4& transform, 
             maxy_total = glm::max(maxy_total, max_t.y);
             maxz_total = glm::max(maxz_total, max_t.z);
 
-            if (n.size() > 0) {
+            if (n.size() >= p.size()) {
                 glm::vec3 n1 = glm::vec3(n[ind[j] * 3], n[ind[j] * 3 + 1], n[ind[j] * 3 + 2]);
                 glm::vec3 n2 = glm::vec3(n[ind[j + 1] * 3], n[ind[j + 1] * 3 + 1], n[ind[j + 1] * 3 + 2]);
                 glm::vec3 n3 = glm::vec3(n[ind[j + 2] * 3], n[ind[j + 2] * 3 + 1], n[ind[j + 2] * 3 + 2]);
@@ -291,17 +342,21 @@ void Scene::loadMesh(string objPath, Geom& newGeom, const glm::mat4& transform, 
                 glm::vec4 worldn2 = invTranspose * glm::vec4(n2, 0.0);
                 glm::vec4 worldn3 = invTranspose * glm::vec4(n3, 0.0);
 
-                newt.verts[0].normal = glm::vec3(worldn1.x, worldn1.y, worldn1.z);
-                newt.verts[1].normal = glm::vec3(worldn2.x, worldn2.y, worldn2.z);
-                newt.verts[2].normal = glm::vec3(worldn3.x, worldn3.y, worldn3.z);
+                newt.verts[0].normal = glm::normalize(glm::vec3(worldn1));
+                newt.verts[1].normal = glm::normalize(glm::vec3(worldn2));
+                newt.verts[2].normal = glm::normalize(glm::vec3(worldn3));
+            } else {
+                const glm::vec3 normal = glm::normalize(glm::cross(worldp2 - worldp1, worldp3 - worldp1));
+                for (auto &v : newt.verts) v.normal = normal;
             }
 
-            if (uv.size() > 0) {
+            if (uv.size() >= p.size() / 3 * 2) {
                 newt.verts[0].uv = glm::vec2(uv[ind[j] * 2], uv[ind[j] * 2 + 1]);
                 newt.verts[1].uv = glm::vec2(uv[ind[j + 1] * 2], uv[ind[j + 1] * 2 + 1]);
                 newt.verts[2].uv = glm::vec2(uv[ind[j + 2] * 2], uv[ind[j + 2] * 2 + 1]);
             }
-            newt.id = tri_index++;
+            else for (auto &v : newt.verts) v.uv = glm::vec2(0);
+            newt.id = (int)triangles.size();
             triangles.push_back(newt);
         }
     }
@@ -312,7 +367,7 @@ void Scene::loadMesh(string objPath, Geom& newGeom, const glm::mat4& transform, 
 
 void Scene::loadLight() {
     for (int i = 0; i < geoms.size(); i++) {				//	GO THROUGHT ALL GEMOS!
-        if (materials[geoms[i].materialid].emittance > 0) {	//	EMIT, THEN LIGHT!
+        if (geoms[i].materialid >= 0 && materials[geoms[i].materialid].emittance > 0) {
             Light light;
             light.geomIdx = i;
             light.matIdx = geoms[i].materialid;

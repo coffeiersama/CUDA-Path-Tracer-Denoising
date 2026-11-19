@@ -1,0 +1,3 @@
+add_plugin(SharedInputGuides)
+target_sources(SharedInputGuides PRIVATE SharedInputGuides.cpp SharedInputGuides.cs.slang)
+target_copy_shaders(SharedInputGuides RenderPasses/SharedInputGuides)

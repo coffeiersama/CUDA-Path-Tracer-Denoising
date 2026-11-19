@@ -266,9 +266,11 @@ __host__ __device__ float meshIntersectionTest(Geom mesh, Triangle* tris,
 __host__ __device__ bool IntersectBVH(const Ray &ray, ShadeableIntersection * isect,
 	int & hit_tri_index,
 	const BVH_ArrNode *bvh_nodes,
-	const Triangle* primitives) {
+	const Triangle* primitives, const Material *materials = nullptr, const Texture *textures = nullptr,
+    bool anyHit = false, const AccelTriangle *accel = nullptr) {
 
 	if (bvh_nodes == nullptr) { return false; }
+	if (isect->t <= 0) isect->t = FLT_MAX;
 
 	bool hit = false;
 	int isDirNeg[3] = { ray.direction.x < 0.f, ray.direction.y < 0.f, ray.direction.z < 0.f };
@@ -280,22 +282,28 @@ __host__ __device__ bool IntersectBVH(const Ray &ray, ShadeableIntersection * is
 		const BVH_ArrNode *node = &bvh_nodes[curr_ind];
 		float temp_t = 0.f;
 		//check bounding box intersection
-		if (node->bounds.AABBIntersect2(ray, invdir)) {
+		if (node->bounds.intersectBefore(ray, invdir, isect->t)) {
 			if (node->primitive_count > 0) {												// leaf node
 				for (int i = 0; i < node->primitive_count; i++) {							// intersect test with each triangle in the nodes
 					ShadeableIntersection inter;
-					if (primitives[node->primitivesOffset + i].Intersect(ray, &inter)) {	// triangles intersect test
+                    int tri = node->primitivesOffset + i;
+                    bool intersects = accel ? accel[tri].intersect(ray, isect->t, &inter) :
+                                              primitives[tri].Intersect(ray, &inter, isect->t);
+					if (intersects) {
+						if (materials && textures) {
+							int mat = accel ? accel[tri].materialId : primitives[tri].materialId;
+							int tex = mat >= 0 ? materials[mat].texid : -1;
+                            if (tex >= 0 && textures[tex].alphaTest) {
+                                glm::vec2 uv = inter.uv;
+                                if (accel) uv = primitives[tri].verts[0].uv * (1 - inter.uv.x - inter.uv.y) +
+                                                primitives[tri].verts[1].uv * inter.uv.x + primitives[tri].verts[2].uv * inter.uv.y;
+                                if (textures[tex].getOpacity(uv) < 0.5f) continue;
+                            }
+						}
 						hit = true;
-						if (isect->t == -1.0f) {
-							(*isect) = inter;
-							hit_tri_index = primitives[node->primitivesOffset + i].id;
-						}
-						else {
-							if (inter.t < isect->t) {
-								(*isect) = inter;
-								hit_tri_index = primitives[node->primitivesOffset + i].id;
-							}
-						}
+                        (*isect) = inter;
+                        hit_tri_index = node->primitivesOffset + i;
+                        if (anyHit) return true;
 					}
 				}
 				if (toVisitOffset == 0) { break; }
@@ -325,5 +333,6 @@ __host__ __device__ bool IntersectBVH(const Ray &ray, ShadeableIntersection * is
 			curr_ind = needToVisit[--toVisitOffset];
 		}
 	}
+    if (hit && accel) primitives[hit_tri_index].interpolate(isect->uv, isect);
 	return hit;
 }

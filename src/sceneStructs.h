@@ -68,6 +68,9 @@ struct Material {
         texid = -1;             // if id is -1 then not have any texture!
         emittance = 1;
         indexOfRefraction = 1.0f;
+        hasReflective = hasRefractive = 0;
+        specular.exponent = 0;
+        norid = -1;
     }
 };
 
@@ -84,6 +87,8 @@ struct Camera {
 
 struct RenderState {
     Camera camera;
+    float lightRadius = 1.4f;
+    glm::vec3 skyRadiance = glm::vec3(0.0f);
     unsigned int iterations;
     std::vector<glm::vec3> image;
     std::string imageName;
@@ -111,6 +116,7 @@ struct ShadeableIntersection {
 };
 
 struct GBufferTexel {
+    glm::vec3 emission = glm::vec3(0);
     glm::vec3 normal;
     glm::vec3 position;
     glm::vec3 albedo;
@@ -120,6 +126,8 @@ struct GBufferTexel {
 
 struct Triangle {
     int id;
+    int materialId = -1;
+    int geomId = -1;
     Vertex verts[3];		//	THE THREE VERTEXES OF THE TRIANGLE
     Normal3f normal;		//	THE NORMAL OF THE TRIANGLE ITS SELF	
 
@@ -129,6 +137,12 @@ struct Triangle {
     } boundingbox;
 
     Triangle() {};
+
+    __host__ __device__ void interpolate(glm::vec2 bary, ShadeableIntersection *isect) const {
+        const float w = 1.0f - bary.x - bary.y;
+        isect->uv = verts[0].uv * w + verts[1].uv * bary.x + verts[2].uv * bary.y;
+        isect->surfaceNormal = glm::normalize(verts[0].normal * w + verts[1].normal * bary.x + verts[2].normal * bary.y);
+    }
 
     __host__ __device__ Point3f calculateMidPoint() {
         return (boundingbox.maxCorner + boundingbox.minCorner) / 2.f;
@@ -154,29 +168,50 @@ struct Triangle {
         return glm::length(glm::cross(verts[0].pos - verts[1].pos, verts[2].pos - verts[1].pos)) * 0.5f;
     }
 
-    __host__ __device__ bool Intersect(const Ray& r, ShadeableIntersection* isect) const {
+    __host__ __device__ bool Intersect(const Ray& r, ShadeableIntersection* isect, float maxDistance = FLT_MAX) const {
         glm::vec3 bari(0.f);
-        if (glm::intersectRayTriangle(r.origin, r.direction, verts[0].pos, verts[1].pos, verts[2].pos, bari)) {
+        if (glm::intersectRayTriangle(r.origin, r.direction, verts[0].pos, verts[1].pos, verts[2].pos, bari) && bari.z > 1e-5f && bari.z < maxDistance) {
             isect->t = bari.z;
-            // bari: alpha + beta + gamma = 1
-            isect->uv = verts[0].uv * (1.0f - bari.x - bari.y) +
-                verts[1].uv * bari.x +
-                verts[2].uv * bari.y;
-
-            //isect->uv = verts[0].uv * bari.x + verts[1].uv * bari.y + verts[2].uv * (1.f - bari.x - bari.y);
-            //isect->surfaceNormal = verts[0].normal * (1.0f - bari.x - bari.y) + verts[1].normal * bari.x + verts[2].normal * bari.y;
-            isect->surfaceNormal = verts[0].normal * bari.x +
-                verts[1].normal * bari.y +
-                verts[2].normal * (1.f - bari.x - bari.y);
-
-            isect->surfaceNormal = glm::normalize(isect->surfaceNormal);
-            glm::vec3 objspaceIntersection = r.origin + bari.z * glm::normalize(r.direction);
+            interpolate(glm::vec2(bari), isect);
             return true;
         }
         else {
             isect->t = -1.0f;
             return false;
         }
+    }
+};
+
+// Intersection-only cache; shade only the final closest hit.
+struct alignas(16) AccelTriangle {
+    glm::vec3 position;
+    int materialId;
+    glm::vec3 edge1;
+    int geomId;
+    glm::vec3 edge2;
+    int padding = 0;
+
+    AccelTriangle() = default;
+    explicit AccelTriangle(const Triangle &t) : position(t.verts[0].pos), materialId(t.materialId),
+        edge1(t.verts[1].pos - t.verts[0].pos), geomId(t.geomId), edge2(t.verts[2].pos - t.verts[0].pos) {}
+
+    __host__ __device__ bool intersect(const Ray &ray, float limit, ShadeableIntersection *hit) const {
+        glm::vec3 p = glm::cross(ray.direction, edge2);
+        float determinant = glm::dot(edge1, p);
+        // Preserve GLM's front-face and epsilon convention.
+        if (determinant < FLT_EPSILON) return false;
+        float inverse = 1.0f / determinant;
+        glm::vec3 delta = ray.origin - position;
+        float u = inverse * glm::dot(delta, p);
+        if (u < 0 || u > 1) return false;
+        glm::vec3 q = glm::cross(delta, edge1);
+        float v = inverse * glm::dot(ray.direction, q);
+        if (v < 0 || u + v > 1) return false;
+        float distance = inverse * glm::dot(edge2, q);
+        if (distance <= 1e-5f || distance >= limit) return false;
+        hit->t = distance;
+        hit->uv = glm::vec2(u, v); // barycentrics, expanded after traversal
+        return true;
     }
 };
 
@@ -187,16 +222,24 @@ struct Texture {
     int components;
     unsigned char *image;
     unsigned char *dev_image;
+    bool alphaTest = false;
 
     Texture() {
         width = -1;
         height = -1;
         components = -1;
         image = NULL;
+        dev_image = NULL;
     }
 
     void Load(char const *filename) {
-        image = stbi_load(filename, &width, &height, &components, 0);
+        image = stbi_load(filename, &width, &height, &components, 4);
+        components = 4;
+        if (image) {
+            for (int p = 0; p < width * height; ++p) {
+                if (image[4 * p + 3] < 128) { alphaTest = true; break; }
+            }
+        }
         if (image == NULL) {
             printf("FAILED TO LOAD TEXTURE!\n");
         }
@@ -205,11 +248,11 @@ struct Texture {
         }
     }
 
-    __host__ __device__ glm::vec3 getColor(glm::vec2& uv) {
-        int X = glm::min(1.f * width * uv.x, 1.f * width - 1.0f);
-        int Y = glm::min(1.f * height * (1.0f - uv.y), 1.f * height - 1.0f);
+    __host__ __device__ glm::vec3 getColor(const glm::vec2& uv) const {
+        int X = glm::clamp((int)(width * (uv.x - floorf(uv.x))), 0, width - 1);
+        int Y = glm::clamp((int)(height * (1.0f - (uv.y - floorf(uv.y)))), 0, height - 1);
         int texel_index = Y * width + X;
-        if (components == 3) {
+        if (components >= 3 && dev_image) {
             glm::vec3 col = glm::vec3(dev_image[texel_index * components],
                 dev_image[texel_index * components + 1],
                 dev_image[texel_index * components + 2]);
@@ -217,12 +260,19 @@ struct Texture {
             //printf("texture color: %f, %f, %f", col.x, col.y, col.z);
             return col;
         }
-        //return glm::vec3(-1.0f);
+        return glm::vec3(1.0f);
+    }
+
+    __host__ __device__ float getOpacity(const glm::vec2& uv) const {
+        if (!alphaTest || components != 4 || !dev_image) return 1.0f;
+        int x = glm::clamp((int)(width * (uv.x - floorf(uv.x))), 0, width - 1);
+        int y = glm::clamp((int)(height * (1.0f - (uv.y - floorf(uv.y)))), 0, height - 1);
+        return dev_image[(x + y * width) * components + 3] * COLORDIVIDOR;
     }
 };
 
 // LIGHT PART
-enum LightType {
+enum class LightType {
     AREALIGHT,
     SPOT,
     POINT,
